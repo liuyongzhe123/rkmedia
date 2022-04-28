@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "rkmedia_api.h": "c",
+        "sample_common.h": "c",
+        "queue": "cpp",
+        "rkmedia_common.h": "c"
+    }
+}
