@@ -207,11 +207,12 @@ int VdecGetFrame(int channelid, FrameInfo *frameinfo)
     else
     {
         // LogE("Get Frame:ptr:%p, fd:%d, size:%zu, mode:%d, channel:%d, "
-        //        "timestamp:%lld, ImgInfo:<wxh %dx%d, fmt 0x%x>\n",
+        //        "timestamp:%lld, ImgInfo:<wxh %dx%d, %dx%d, fmt 0x%x>\n",
         //        RK_MPI_MB_GetPtr(framemb), RK_MPI_MB_GetFD(framemb), RK_MPI_MB_GetSize(framemb),
         //        RK_MPI_MB_GetModeID(framemb), RK_MPI_MB_GetChannelID(framemb),
         //        RK_MPI_MB_GetTimestamp(framemb), stImageInfo.u32Width,
-        //        stImageInfo.u32Height, stImageInfo.enImgType);
+        //        stImageInfo.u32Height, stImageInfo.u32HorStride,
+        //        stImageInfo.u32VerStride, stImageInfo.enImgType);
         if (RK_MPI_MB_GetPtr(framemb) == NULL || RK_MPI_MB_GetSize(framemb) == 0)
         {
             RK_MPI_MB_ReleaseBuffer(framemb);
@@ -219,7 +220,37 @@ int VdecGetFrame(int channelid, FrameInfo *frameinfo)
         }
         else
         {
-            memcpy(frameinfo->rawdata, RK_MPI_MB_GetPtr(framemb), RK_MPI_MB_GetSize(framemb));
+            //1080P的h265需要做裁剪
+            if (gVdecContext[channelid].codectype == CODEC_H265 &&
+                stImageInfo.u32Width == 1920 &&
+                stImageInfo.u32Height == 1080 &&
+                (stImageInfo.u32Width != stImageInfo.u32HorStride/*2304*/))
+            {
+                FrameInfo srcframeinfo;
+                srcframeinfo.pixelformat = PIXEL_FORMAT_NV12;
+                srcframeinfo.rawdata = (unsigned char *)RK_MPI_MB_GetPtr(framemb);
+                srcframeinfo.size.width = stImageInfo.u32HorStride;
+                srcframeinfo.size.height = stImageInfo.u32VerStride;
+                CropRect rect = {0, 0, 1920, 1080};
+                FrameInfo dstframeinfo;
+                dstframeinfo.rawdata = (unsigned char *)malloc(1920 * 1080 * 3 / 2);
+                if (dstframeinfo.rawdata == NULL)
+                {
+                    LogE("dstframeinfo.rawdata malloc failed\n");
+                    return MI_ERROR_NOMEM;
+                }
+                CropFrame(&srcframeinfo, rect, &dstframeinfo);
+                memcpy(frameinfo->rawdata, dstframeinfo.rawdata, 1920 * 1080 * 3 / 2);
+                if (dstframeinfo.rawdata == NULL)
+                {
+                    free(dstframeinfo.rawdata);
+                    dstframeinfo.rawdata = NULL;
+                }
+            }
+            else
+            {
+                memcpy(frameinfo->rawdata, RK_MPI_MB_GetPtr(framemb), RK_MPI_MB_GetSize(framemb));
+            }    
             frameinfo->pixelformat = PIXEL_FORMAT_NV12;
             frameinfo->size.width = stImageInfo.u32Width;
             frameinfo->size.height = stImageInfo.u32Height;
