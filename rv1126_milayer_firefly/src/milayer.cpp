@@ -21,6 +21,8 @@
 #define VDEC_CHANNEL_GETDATA_TIMEOUTMS 500
 #define VDEC_RAWDATA_LENGTH (1920 * 1080 * 3 * 4)
 #define PIXEL_ALIGNMENT_STEPSIZE 4
+#define VIDEO_WIDTH_1080P 1920
+#define VIDEO_HEIGHT_1080P 1080
 
 typedef struct _VdecContext
 {
@@ -34,7 +36,9 @@ typedef struct _VdecContext
 
 VdecContext gVdecContext[4] = {0};
 bool gRKSysInit = false;
-pthread_mutex_t gMutex = PTHREAD_MUTEX_INITIALIZER;
+bool gRKVencChannelInit = false;
+pthread_mutex_t gVdecMutex;
+pthread_mutex_t gVencMutex;
 
 void *VdecThread(void *args)
 {
@@ -142,6 +146,7 @@ int VdecChnCreate(int channelid, int codectype, demuxToDecodeContext *demuxtodec
     int ret = MI_SUCESS;
     if (gRKSysInit == false)
     {
+        pthread_mutex_init(&gVdecMutex, NULL);
         RK_MPI_SYS_Init();
         LOG_LEVEL_CONF_S pstConf;
         pstConf.s32Level = 0;
@@ -160,9 +165,9 @@ int VdecChnCreate(int channelid, int codectype, demuxToDecodeContext *demuxtodec
     if (gVdecContext[channelid].vdecthreadexit == false)
     {
         gVdecContext[channelid].channelid = channelid;
-        pthread_mutex_lock(&gMutex);
+        pthread_mutex_lock(&gVdecMutex);
         gVdecContext[channelid].codectype = codectype;
-        pthread_mutex_unlock(&gMutex);
+        pthread_mutex_unlock(&gVdecMutex);
         gVdecContext[channelid].demuxtodecodecontext = demuxtodecodecontext;
         gVdecContext[channelid].rawdata = (unsigned char *)malloc(VDEC_RAWDATA_LENGTH);
         if (gVdecContext[channelid].rawdata == NULL)
@@ -192,7 +197,7 @@ int VdecGetFrame(int channelid, FrameInfo *frameinfo)
     MEDIA_BUFFER framemb;
     MB_IMAGE_INFO_S stImageInfo;
 
-    framemb = RK_MPI_SYS_GetMediaBuffer(RK_ID_VDEC, channelid, VDEC_CHANNEL_GETDATA_TIMEOUTMS);
+    framemb = RK_MPI_SYS_GetMediaBuffer(RK_ID_VDEC, channelid, -1);
     if (!framemb)
     {
         LogE("RK_MPI_SYS_GetMediaBuffer get null buffer in %d ms\n", VDEC_CHANNEL_GETDATA_TIMEOUTMS);
@@ -220,28 +225,28 @@ int VdecGetFrame(int channelid, FrameInfo *frameinfo)
         }
         else
         {
-            //1080P的h265需要做裁剪
-            if (gVdecContext[channelid].codectype == CODEC_H265 &&
-                stImageInfo.u32Width == 1920 &&
-                stImageInfo.u32Height == 1080 &&
-                (stImageInfo.u32Width != stImageInfo.u32HorStride/*2304*/))
+            // 1080P的h265需要做裁剪 //1080P的h264需要做裁剪
+            if ((((gVdecContext[channelid].codectype == CODEC_H265) && (stImageInfo.u32Width != stImageInfo.u32HorStride) /*2304*/) ||
+                 ((gVdecContext[channelid].codectype == CODEC_H264) && (stImageInfo.u32Height != stImageInfo.u32VerStride) /*1088*/)) &&
+                stImageInfo.u32Width == VIDEO_WIDTH_1080P &&
+                stImageInfo.u32Height == VIDEO_HEIGHT_1080P)
             {
                 FrameInfo srcframeinfo;
                 srcframeinfo.pixelformat = PIXEL_FORMAT_NV12;
                 srcframeinfo.rawdata = (unsigned char *)RK_MPI_MB_GetPtr(framemb);
                 srcframeinfo.size.width = stImageInfo.u32HorStride;
                 srcframeinfo.size.height = stImageInfo.u32VerStride;
-                CropRect rect = {0, 0, 1920, 1080};
+                CropRect rect = {0, 0, VIDEO_WIDTH_1080P, VIDEO_HEIGHT_1080P};
                 FrameInfo dstframeinfo;
-                dstframeinfo.rawdata = (unsigned char *)malloc(1920 * 1080 * 3 / 2);
+                dstframeinfo.rawdata = (unsigned char *)malloc(VIDEO_WIDTH_1080P * VIDEO_HEIGHT_1080P * 3 / 2);
                 if (dstframeinfo.rawdata == NULL)
                 {
                     LogE("dstframeinfo.rawdata malloc failed\n");
                     return MI_ERROR_NOMEM;
                 }
                 CropFrame(&srcframeinfo, rect, &dstframeinfo);
-                memcpy(frameinfo->rawdata, dstframeinfo.rawdata, 1920 * 1080 * 3 / 2);
-                if (dstframeinfo.rawdata == NULL)
+                memcpy(frameinfo->rawdata, dstframeinfo.rawdata, VIDEO_WIDTH_1080P * VIDEO_HEIGHT_1080P * 3 / 2);
+                if (dstframeinfo.rawdata != NULL)
                 {
                     free(dstframeinfo.rawdata);
                     dstframeinfo.rawdata = NULL;
@@ -250,7 +255,7 @@ int VdecGetFrame(int channelid, FrameInfo *frameinfo)
             else
             {
                 memcpy(frameinfo->rawdata, RK_MPI_MB_GetPtr(framemb), RK_MPI_MB_GetSize(framemb));
-            }    
+            }
             frameinfo->pixelformat = PIXEL_FORMAT_NV12;
             frameinfo->size.width = stImageInfo.u32Width;
             frameinfo->size.height = stImageInfo.u32Height;
@@ -545,6 +550,17 @@ int SaveImage(FrameInfo *srcframeinfo, JpegInfo *jpeginfo)
     RK_U32 u32Height = srcframeinfo->size.height;
     VENC_CHN_ATTR_S venc_chn_attr;
 
+    if (gRKSysInit == false)
+    {
+        RK_MPI_SYS_Init();
+        LOG_LEVEL_CONF_S pstConf;
+        pstConf.s32Level = 0;
+        strcpy(pstConf.cModName, "all");
+        RK_MPI_LOG_SetLevelConf(&pstConf);
+        gRKSysInit = true;
+        CreateLogFile("milayer", "/tmp");
+    }
+
     //必须初始化, 否则编码失败
     memset(&venc_chn_attr, 0, sizeof(VENC_CHN_ATTR_S));
     venc_chn_attr.stVencAttr.u32PicWidth = u32Width;
@@ -563,7 +579,7 @@ int SaveImage(FrameInfo *srcframeinfo, JpegInfo *jpeginfo)
     {
         venc_chn_attr.stVencAttr.imageType = IMAGE_TYPE_RGB888;
     }
-    venc_chn_attr.stVencAttr.enType = RK_CODEC_TYPE_MJPEG;
+    venc_chn_attr.stVencAttr.enType = RK_CODEC_TYPE_JPEG;
     venc_chn_attr.stRcAttr.enRcMode = VENC_RC_MODE_MJPEGCBR;
     venc_chn_attr.stRcAttr.stMjpegCbr.fr32DstFrameRateDen = 1;
     venc_chn_attr.stRcAttr.stMjpegCbr.fr32DstFrameRateNum = u32Fps;
@@ -571,8 +587,13 @@ int SaveImage(FrameInfo *srcframeinfo, JpegInfo *jpeginfo)
     venc_chn_attr.stRcAttr.stMjpegCbr.u32SrcFrameRateNum = u32Fps;
     venc_chn_attr.stRcAttr.stMjpegCbr.u32BitRate = u32Width * u32Height * 8;
 
-    RK_MPI_SYS_Init();
+    if (gRKVencChannelInit == false)
+    {
+        pthread_mutex_init(&gVencMutex, NULL);
+        gRKVencChannelInit = true;
+    }
 
+    pthread_mutex_lock(&gVencMutex);
     ret = RK_MPI_VENC_CreateChn(0, &venc_chn_attr);
     if (ret)
     {
@@ -619,13 +640,14 @@ int SaveImage(FrameInfo *srcframeinfo, JpegInfo *jpeginfo)
     memcpy(jpeginfo->jpegdata, RK_MPI_MB_GetPtr(jpegmb), RK_MPI_MB_GetSize(jpegmb));
     jpeginfo->jpeglength = RK_MPI_MB_GetSize(jpegmb);
     RK_MPI_MB_ReleaseBuffer(jpegmb);
-
+    
     ret = RK_MPI_VENC_DestroyChn(0);
     if (ret)
     {
         LogE("Destroy Venc(JPEG) failed! ret=%d\n", ret);
         return ret;
     }
+    pthread_mutex_unlock(&gVencMutex);
 
     return ret;
 }

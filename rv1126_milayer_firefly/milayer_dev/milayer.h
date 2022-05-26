@@ -95,7 +95,8 @@ int VdecChnCreate(int channelid, int codectype, demuxToDecodeContext *demuxtodec
 int VdecGetFrame(int channelid, FrameInfo *frameinfo);
 
 /**
- * @brief  Frame等比缩放
+ * @brief  Frame等比缩放 1.Unsupported to scaling less than 1/16 ~ 16 times,放大或者缩小的倍数最大为16
+ *                       2.only support 4 aligned horizontal stride,默认长度对齐像素长度最小为4
  * @param  srcframeinfo  [in]原始图像
  * @param  dsize         [in]等比缩放之后的宽高
  * @param  dstframeinfo  [out]缩放获取到的图像
@@ -104,7 +105,7 @@ int VdecGetFrame(int channelid, FrameInfo *frameinfo);
 int ResizeFrame(FrameInfo *srcframeinfo, ReSizeRect dsize, FrameInfo *dstframeinfo);
 
 /**
- * @brief  Frame区域裁剪
+ * @brief  Frame区域裁剪 1.only support 4 aligned horizontal stride,默认长度对齐像素长度最小为4
  * @param  srcframeinfo [in]原始图像
  * @param  rect         [in]裁切区域
  * @param  dstframeinfo [out]裁切后，获取到的图像
@@ -122,7 +123,8 @@ int CropFrame(FrameInfo *srcframeinfo, CropRect rect, FrameInfo *dstframeinfo);
 int PixelFormatFrame(FrameInfo *srcframeinfo, int pixelformat, FrameInfo *dstframeinfo);
 
 /**
- * @brief  编码jpg图片
+ * @brief  编码jpg图片 1.only support 8 aligned horizontal stride in pixel for YUV420SP with pixel size 1
+ *                       默认长度对齐像素长度最小为8
  * @param  srcframeinfo [in]原始图像
  * @param  jpegInfo     [out]编码jpg图片
  * @return success=0, fail=详见错误码说明
